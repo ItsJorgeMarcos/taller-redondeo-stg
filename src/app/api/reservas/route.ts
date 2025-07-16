@@ -1,38 +1,42 @@
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// src/app/api/reservas/route.ts
 import { NextResponse } from 'next/server';
-import { startOfDay, addDays } from 'date-fns';
+import { addDays } from 'date-fns';
 import { getBookings, type BookingLine } from '@/lib/shopify';
 
 type Slot = {
   from: string;
   to: string;
   persons: number;
-  orders: string[];
-  attended: boolean[];
+  orders: { gid: string; name: string; persons: number }[];
+  attended: boolean;
 };
 
-export async function GET() {
-  const now = startOfDay(new Date());
-  const end = addDays(now, 30);
+export async function GET(request: Request) {
+  const now = new Date();
+  const max = addDays(now, 30);
+  const bookings: BookingLine[] = await getBookings(now, max);
 
-  const bookings: BookingLine[] = await getBookings(now, end, false);
-
+  // Agrupamos por slot
   const slots = new Map<string, Slot>();
-
   for (const b of bookings) {
-    const key = `${b.from.toISOString()}_${b.to.toISOString()}`;
+    const key = b.fromISO;
     const slot = slots.get(key) ?? {
-      from: b.from.toISOString(),
-      to:   b.to.toISOString(),
+      from: b.fromISO,
+      to: b.toISO,
       persons: 0,
       orders: [],
-      attended: [],
+      attended: false,
     };
     slot.persons += b.persons;
-    slot.orders.push(`${b.orderName} • ${b.persons} pax`);
-    slot.attended.push(b.attended);
+    slot.attended ||= b.assistedCount > 0;
+    const ex = slot.orders.find((o) => o.name === b.orderName);
+    if (ex) ex.persons += b.persons;
+    else slot.orders.push({ gid: b.orderGid, name: b.orderName, persons: b.persons });
     slots.set(key, slot);
   }
 
-  return NextResponse.json(Array.from(slots.values()));
+  const arr = Array.from(slots.values()).sort(
+    (a, b) => new Date(a.from).getTime() - new Date(b.from).getTime()
+  );
+  return NextResponse.json(arr);
 }
