@@ -1,26 +1,20 @@
-import { LATEST_API_VERSION } from '@shopify/shopify-api';
+/** ------------------------------------------------------------------
+ *  src/lib/shopify.ts
+ *  ------------------------------------------------------------------
+ *  Cliente REST para Shopify, simplificado para asegurar que
+ *  trae cualquier pedido con el SKU de taller y lo filtra
+ *  por la fecha de actividad (desde sus propiedades).
+ * ------------------------------------------------------------------ */
 
-/* === Cliente mínimo GraphQL === */
-async function shopifyFetch<T>(
-  query: string,
-  variables: Record<string, unknown> = {}
-): Promise<T> {
-  const res = await fetch(
-    `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${LATEST_API_VERSION}/graphql.json`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': process.env.SHOPIFY_ADMIN_TOKEN!,
-      },
-      body: JSON.stringify({ query, variables }),
-    }
-  );
-  const json = await res.json();
-  if (json.errors) throw new Error(JSON.stringify(json.errors));
-  return json.data;
-}
+import { formatISO } from 'date-fns';
 
+/* 1 · Configuración desde .env ------------------------------------- */
+const SHOP = process.env.SHOPIFY_STORE_DOMAIN!;  // e.g. midominio.myshopify.com
+const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!; // e.g. shpat_xxx
+const API_VERSION = '2025-04';                  // versión REST
+const SKU_TALLER = '588000000204';
+
+/* 2 · Tipos -------------------------------------------------------- */
 export type BookingLine = {
   orderId: string;
   orderName: string;
@@ -30,113 +24,116 @@ export type BookingLine = {
   attended: boolean;
 };
 
-const SKU_TALLER = '588000000204';
+/* 3 · Helper REST con paginación en Link header ------------------- */
+async function* fetchOrdersREST() {
+  let url = `https://${SHOP}/admin/api/${API_VERSION}/orders.json?status=any&limit=250`;
+  const headers = {
+    'X-Shopify-Access-Token': TOKEN,
+    'Content-Type': 'application/json',
+  };
 
-/* === Obtiene TODOS los pedidos con ese SKU y filtra después por rango === */
+  while (url) {
+    const res = await fetch(url, { headers });
+    if (res.status === 429) {
+      // back‑off ligero
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(`Shopify REST error: ${res.status}`);
+    }
+    const body = (await res.json()) as { orders: any[] };
+    yield* body.orders;
+
+    // avanza al siguiente page si existe
+    const link = res.headers.get('link') || '';
+    const m = link.match(/<([^>]+)>;\s*rel="next"/);
+    url = m ? m[1] : '';
+  }
+}
+
+/* 4 · Obtener y filtrar reservas ---------------------------------- */
 export async function getBookings(
   rangeStart: Date,
-  rangeEnd: Date
+  rangeEnd: Date,
+  debug = false
 ): Promise<BookingLine[]> {
   const bookings: BookingLine[] = [];
-  let cursor: string | null = null;
 
-  const skuQuery = `line_items.sku:${SKU_TALLER}`; // sin created_at*
+  for await (const order of fetchOrdersREST()) {
+    const attended = (order.tags as string).includes('ASISTIDO');
 
-  const GQL = /* GraphQL */ `
-    query Orders($query: String!, $cursor: String) {
-      orders(first: 100, query: $query, after: $cursor) {
-        pageInfo { hasNextPage }
-        edges {
-          cursor
-          node {
-            id
-            name
-            tags
-            metafield(namespace:"reservas",key:"fecha"){value}
-            metafield(namespace:"reservas",key:"hora"){value}
-            lineItems(first: 100) {
-              edges {
-                node {
-                  sku
-                  quantity
-                  properties { name value }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
+    // iteramos cada línea con el SKU de taller
+    (order.line_items as any[]).forEach((li) => {
+      if (li.sku !== SKU_TALLER) return;
 
-  do {
-    const data = await shopifyFetch<{
-      orders: { pageInfo: { hasNextPage: boolean }; edges: any[] };
-    }>(GQL, { query: skuQuery, cursor });
+      // extraer propiedades de fecha/hora de line_items.properties
+      const props = Array.isArray(li.properties)
+        ? Object.fromEntries(
+            li.properties.map((p: any) => [p.name, p.value])
+          )
+        : {};
 
-    data.orders.edges.forEach((edge) => {
-      cursor = edge.cursor;
-      const order = edge.node;
-      const attended = order.tags?.includes('ASISTIDO');
+      const rawDate = props['Fecha'] ?? props['fecha'];
+      const rawTime = props['Hora'] ?? props['hora'];
+      if (!rawDate || !rawTime) return;
 
-      order.lineItems.edges
-        .filter((le: any) => le.node.sku === SKU_TALLER)
-        .forEach((le: any) => {
-          const { quantity, properties } = le.node;
+      // parsear
+      const isoDate = new Date(rawDate).toISOString().split('T')[0];
+      const [fromStr, toStr] = rawTime.replace(' AM','').replace(' PM','').split(' - ');
+      const from = new Date(`${isoDate}T${fromStr}:00`);
+      const to   = new Date(`${isoDate}T${toStr}:00`);
+      if (from < rangeStart || from > rangeEnd) return;
 
-          const rawDate =
-            order.metafield?.value ??
-            properties.find((p: any) => p.name === 'Fecha')?.value;
-          const rawTime =
-            order.metafield?.value ??
-            properties.find((p: any) => p.name === 'Hora')?.value;
-          if (!rawDate || !rawTime) return;
-
-          const fechaISO = new Date(rawDate).toISOString().split('T')[0];
-          const [fromStr, toStr] = rawTime
-            .replace(' AM', '')
-            .replace(' PM', '')
-            .split(' - ');
-          const from = new Date(`${fechaISO}T${fromStr}:00`);
-          const to = new Date(`${fechaISO}T${toStr}:00`);
-
-          /* ==> Nuevo filtro por rango de la actividad, NO por created_at */
-          if (from < rangeStart || from > rangeEnd) return;
-
-          bookings.push({
-            orderId: order.id,
-            orderName: order.name,
-            persons: quantity,
-            from,
-            to,
-            attended,
-          });
-        });
+      bookings.push({
+        orderId: String(order.id),
+        orderName: order.name,
+        persons: li.quantity,
+        from,
+        to,
+        attended,
+      });
     });
-  } while (cursor);
+  }
 
+  if (debug) console.log('[REST bookings]', bookings);
   return bookings;
 }
 
-/* === Etiquetar pedido como asistido === */
+/* 5 · Marcar pedido como asistido ------------------------------- */
 export async function markAttended(orderId: string, user: string) {
-  const GQL = /* GraphQL */ `
-    mutation Asistido($id: ID!, $tags: [String!], $meta: [MetafieldInput!]) {
-      orderUpdate(input:{id:$id,tags:$tags,metafields:$meta}) {
-        userErrors { field message }
-      }
-    }
-  `;
-  await shopifyFetch(GQL, {
-    id: orderId,
-    tags: ['ASISTIDO', `ASISTIDO_POR_${user}`],
-    meta: [
-      {
-        namespace: 'taller',
-        key: 'asistido_por',
-        type: 'single_line_text_field',
-        value: user,
+  // obtenemos el pedido completo para no sobrescribir tags existentes
+  const idNum = orderId.toString().split('/').pop();
+  const urlGet = `https://${SHOP}/admin/api/${API_VERSION}/orders/${idNum}.json`;
+  const headers = {
+    'X-Shopify-Access-Token': TOKEN,
+    'Content-Type': 'application/json',
+  };
+  const current = await fetch(urlGet, { headers }).then((r) => r.json());
+  const existingTags = (current.order.tags as string).split(',').map((t) => t.trim());
+
+  const newTags = Array.from(
+    new Set([...existingTags, 'ASISTIDO', `ASISTIDO_POR_${user}`])
+  ).filter(Boolean).join(', ');
+
+  // actualizamos tags + añadimos metafield de auditoría
+  const urlPut = urlGet;
+  await fetch(urlPut, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      order: {
+        id: current.order.id,
+        tags: newTags,
+        metafields: [
+          {
+            namespace: 'taller',
+            key: 'asistido_por',
+            type: 'single_line_text_field',
+            value: user,
+          },
+        ],
       },
-    ],
+    }),
   });
 }
