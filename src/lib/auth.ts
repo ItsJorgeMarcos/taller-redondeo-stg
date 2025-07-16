@@ -1,38 +1,46 @@
-import NextAuth, { type NextAuthOptions } from "next-auth";
-import CredentialsProvider from "next-auth/providers/credentials";
-import bcrypt from "bcryptjs";
+import NextAuth, { type NextAuthOptions } from 'next-auth';
+import CredentialsProvider from 'next-auth/providers/credentials';
+import crypto from 'node:crypto';
 
-type UserRec = { email: string; hash: string };
+type UserRec = { name: string; pass: string };
 
 function loadUsers(): UserRec[] {
-  return (process.env.AUTH_USERS ?? "")
-    .split(",")
+  return (process.env.AUTH_USERS ?? '')
+    .split(',')
     .filter(Boolean)
     .map((pair) => {
-      const [email, hash] = pair.split(":");
-      return { email, hash };
+      const [name, pass] = pair.split(':');
+      return { name, pass };
     });
+}
+
+/* Compara de forma constante para evitar timing‑attacks */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 export const authOptions: NextAuthOptions = {
   providers: [
     CredentialsProvider({
-      name: "Login Taller",
+      name: 'Login Taller',
       credentials: {
-        email: { label: "E‑mail", type: "text" },
-        password: { label: "Contraseña", type: "password" },
+        username: { label: 'Usuario', type: 'text' },
+        password: { label: 'Contraseña', type: 'password' },
       },
       async authorize(creds) {
         if (!creds) return null;
-        const user = loadUsers().find((u) => u.email === creds.email);
+        const user = loadUsers().find((u) => u.name === creds.username);
         if (!user) return null;
-        const ok = bcrypt.compareSync(creds.password, user.hash);
-        return ok ? { id: user.email, email: user.email } : null;
+        const ok = safeEqual(creds.password, user.pass);
+        return ok ? { id: user.name, name: user.name } : null;
       },
     }),
   ],
-  pages: { signIn: "/login" },
-  session: { strategy: "jwt" },
+  pages: { signIn: '/login' },
+  session: { strategy: 'jwt' },
   secret: process.env.NEXTAUTH_SECRET,
 };
 
