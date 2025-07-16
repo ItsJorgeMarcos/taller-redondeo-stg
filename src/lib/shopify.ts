@@ -1,14 +1,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** ------------------------------------------------------------------
- *  Cliente REST para Shopify — rápido y sin límites de GraphQL
- * ------------------------------------------------------------------ */
+ *  src/lib/shopify.ts
+ *  ------------------------------------------------------------------
+ *  Extrae reservas del SKU 588000000204 desde la REST API de Shopify.
+ *  Reconoce:
+ *    - Propiedad “Reservas”  →  "Fecha: ... Hora: ... - ..."
+ *  ------------------------------------------------------------------ */
 
-const SHOP = process.env.SHOPIFY_STORE_DOMAIN!; // p.e. midominio.myshopify.com
-const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!; // shpat_xxx
+const SHOP = process.env.SHOPIFY_STORE_DOMAIN!;   // midominio.myshopify.com
+const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;  // shpat_xxx
 const API_VERSION = '2025-04';
-const SKU_TALLER = '588000000204';
+const SKU = '588000000204';
 
-/* ---------- Tipos mínimos ---------- */
+/* ---------- Slot que consume el frontend ---------- */
 export type BookingLine = {
   orderId: string;
   orderName: string;
@@ -18,7 +22,7 @@ export type BookingLine = {
   attended: boolean;
 };
 
-/* ---------- Paginador REST ---------- */
+/* ---------- Paginador orders.json ---------- */
 async function* fetchOrders(start: Date, end: Date) {
   let url =
     `https://${SHOP}/admin/api/${API_VERSION}/orders.json` +
@@ -41,73 +45,79 @@ async function* fetchOrders(start: Date, end: Date) {
     const body = (await res.json()) as { orders: any[] };
     yield* body.orders;
 
-    const link = res.headers.get('link') ?? '';
-    const next = link.match(/<([^>]+)>;\s*rel="next"/);
+    const next = res.headers
+      .get('link')
+      ?.match(/<([^>]+)>;\s*rel="next"/);
     url = next ? next[1] : '';
   }
 }
 
-/* ---------- Obtener reservas ---------- */
+/* ---------- Parser "Fecha: ... Hora: ... - ..." ---------- */
+function splitReservas(value: string): { date: string; time: string } | null {
+  const m = value.match(/Fecha:\s*([^H]+)Hora:\s*(.+)/i);
+  if (!m) return null;
+  return { date: m[1].trim(), time: m[2].trim() };
+}
+
+/* ---------- Booking extractor seguro ---------- */
 export async function getBookings(
-  rangeStart: Date,
-  rangeEnd: Date,
+  from: Date,
+  to: Date,
   debug = false
 ): Promise<BookingLine[]> {
   const out: BookingLine[] = [];
 
-  for await (const order of fetchOrders(rangeStart, rangeEnd)) {
+  for await (const order of fetchOrders(from, to)) {
     const attended = (order.tags as string).includes('ASISTIDO');
 
     for (const li of order.line_items as any[]) {
-      if (li.sku !== SKU_TALLER) continue;
+      if (li.sku !== SKU) continue;
 
-      /* Diccionario de propiedades en minúsculas */
-      const props: Record<string, string> = {};
-      (li.properties ?? []).forEach((p: any) => {
-        props[p.name.toLowerCase()] = p.value;
-      });
+      /* 1. localizar la propiedad Reservas */
+      const reservasProp = (li.properties ?? []).find(
+        (p: any) => p.name.toLowerCase() === 'reservas'
+      );
+      if (!reservasProp) continue;
 
-      /* Buscar la primera key que contenga “fecha” / “hora” */
-      const rawDate =
-        Object.entries(props).find(([k]) => k.includes('fecha'))?.[1] ?? '';
-      const rawTime =
-        Object.entries(props).find(([k]) => k.includes('hora'))?.[1] ?? '';
-      if (!rawDate || !rawTime) continue;
+      const match = String(reservasProp.value).match(
+        /Fecha:\s*([^H]+)\s*Hora:\s*(.+)\s*-\s*(.+)/i
+      );
+      if (!match) continue;
 
-      const isoDate = new Date(rawDate).toISOString().split('T')[0];
-      const [fromStr, toStr] = rawTime
-        .replace(' AM', '')
-        .replace(' PM', '')
-        .split(' - ');
-      const from = new Date(`${isoDate}T${fromStr}:00`);
-      const to   = new Date(`${isoDate}T${toStr}:00`);
-      if (from < rangeStart || from > rangeEnd) continue;
+      const rawDate = match[1].trim();        // "Jul 20, 2025"
+      const rawFrom = match[2].trim();        // "10:30 AM"
+      const rawTo   = match[3].trim();        // "11:10 AM"
+
+      const start = new Date(`${rawDate} ${rawFrom}`);
+      const end   = new Date(`${rawDate} ${rawTo}`);
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) continue;
+      if (start < from || start > to) continue;
 
       out.push({
         orderId: String(order.id),
         orderName: order.name,
         persons: li.quantity ?? 0,
-        from,
-        to,
+        from: start,
+        to: end,
         attended,
       });
     }
   }
 
-  if (debug) console.log('[bookings]', out.length, out.slice(0, 3));
+  if (debug) console.log('[bookings]', out.length);
   return out;
 }
 
-/* ---------- Marcar pedido asistido ---------- */
+
+/* ---------- Marcar asistido ---------- */
 export async function markAttended(orderId: string, user: string) {
-  const id = orderId.split('/').pop(); // extraer numérico del gid
+  const id = orderId.split('/').pop();
   const url = `https://${SHOP}/admin/api/${API_VERSION}/orders/${id}.json`;
   const headers = {
     'X-Shopify-Access-Token': TOKEN,
     'Content-Type': 'application/json',
   };
 
-  /* Traemos el pedido para no sobrescribir otras etiquetas */
   const cur = await fetch(url, { headers }).then((r) => r.json());
   const tags = (cur.order.tags as string)
     .split(',')
