@@ -2,24 +2,36 @@
 import { NextResponse } from 'next/server';
 import { markSlotAttended, unmarkSlotAttended } from '@/lib/shopify';
 
-export async function POST(req: Request) {
+interface MarkBody {
+  gid: string;
+  slotISO: string;
+  user: string;
+  count: number;
+}
+
+interface UnmarkBody {
+  gid: string;
+  slotISO: string;
+}
+
+export async function POST(request: Request): Promise<NextResponse> {
   try {
-    const { gid, slotISO, user, count } = await req.json();
-    await markSlotAttended(gid, slotISO, user, count);
+    const body = (await request.json()) as MarkBody;
+    await markSlotAttended(body.gid, body.slotISO, body.user, body.count);
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (err) {
+    console.error('Error marking attended:', err);
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE(request: Request): Promise<NextResponse> {
   try {
-    const { gid, slotISO } = await req.json();
-    await unmarkSlotAttended(gid, slotISO);
+    const body = (await request.json()) as UnmarkBody;
+    await unmarkSlotAttended(body.gid, body.slotISO);
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (err) {
+    console.error('Error unmarking attended:', err);
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }

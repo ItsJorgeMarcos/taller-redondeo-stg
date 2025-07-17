@@ -11,12 +11,11 @@ type Slot = {
   attended: boolean;
 };
 
-export async function GET(request: Request) {
+export async function GET(): Promise<NextResponse> {
   const now = new Date();
   const max = addDays(now, 30);
   const bookings: BookingLine[] = await getBookings(now, max);
 
-  // Agrupamos por slot
   const slots = new Map<string, Slot>();
   for (const b of bookings) {
     const key = b.fromISO;
@@ -29,14 +28,18 @@ export async function GET(request: Request) {
     };
     slot.persons += b.persons;
     slot.attended ||= b.assistedCount > 0;
-    const ex = slot.orders.find((o) => o.name === b.orderName);
-    if (ex) ex.persons += b.persons;
-    else slot.orders.push({ gid: b.orderGid, name: b.orderName, persons: b.persons });
+    const existing = slot.orders.find((o) => o.name === b.orderName);
+    if (existing) {
+      existing.persons += b.persons;
+    } else {
+      slot.orders.push({ gid: b.orderGid, name: b.orderName, persons: b.persons });
+    }
     slots.set(key, slot);
   }
 
-  const arr = Array.from(slots.values()).sort(
+  const sorted = Array.from(slots.values()).sort(
     (a, b) => new Date(a.from).getTime() - new Date(b.from).getTime()
   );
-  return NextResponse.json(arr);
+
+  return NextResponse.json(sorted);
 }
