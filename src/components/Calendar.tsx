@@ -73,7 +73,7 @@ export default function Calendar() {
                       {format(new Date(slot.from), 'HH:mm')} – 
                       {format(new Date(slot.to), 'HH:mm')}
                     </span>
-                    <span className="px-3 py-1 bg-[#F0816C] text-white rounded-full text-sm font-medium">
+                    <span className="px-3 py-1 bg-[#FAEDEB] text-[#000000] rounded-full text-sm font-medium">
                       {total}/15 pers
                     </span>
                   </div>
