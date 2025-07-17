@@ -6,40 +6,56 @@ import { getBookings, type BookingLine } from '@/lib/shopify';
 type Slot = {
   from: string;
   to: string;
-  persons: number;
-  orders: { gid: string; name: string; persons: number }[];
-  attended: boolean;
+  orders: Array<{
+    gid: string;
+    name: string;
+    persons: number;
+    attended: boolean;
+  }>;
 };
 
-export async function GET(): Promise<NextResponse> {
+export async function GET() {
   const now = new Date();
   const max = addDays(now, 30);
-  const bookings: BookingLine[] = await getBookings(now, max);
+  const lines: BookingLine[] = await getBookings(now, max);
 
-  const slots = new Map<string, Slot>();
-  for (const b of bookings) {
+  // Agrupamos slots y dentro de cada slot agrupamos pedidos iguales
+  const map = new Map<string, Slot>();
+
+  for (const b of lines) {
+    // clave única para el slot (misma fecha/hora)
     const key = b.fromISO;
-    const slot = slots.get(key) ?? {
+
+    // si el slot no existe, lo inicializamos
+    const slot = map.get(key) ?? {
       from: b.fromISO,
       to: b.toISO,
-      persons: 0,
       orders: [],
-      attended: false,
     };
-    slot.persons += b.persons;
-    slot.attended ||= b.assistedCount > 0;
-    const existing = slot.orders.find((o) => o.name === b.orderName);
+
+    // buscamos si ya existe ese pedido en el slot
+    const existing = slot.orders.find((o) => o.gid === b.orderGid);
     if (existing) {
+      // si ya existía, sumamos personas y mantenemos el attended si alguno lo estaba
       existing.persons += b.persons;
+      existing.attended = existing.attended || b.attended;
     } else {
-      slot.orders.push({ gid: b.orderGid, name: b.orderName, persons: b.persons });
+      // si no existía, lo añadimos
+      slot.orders.push({
+        gid: b.orderGid,
+        name: b.orderName,
+        persons: b.persons,
+        attended: b.attended,
+      });
     }
-    slots.set(key, slot);
+
+    map.set(key, slot);
   }
 
-  const sorted = Array.from(slots.values()).sort(
+  // convertimos a array y ordenamos cronológicamente
+  const slots = Array.from(map.values()).sort(
     (a, b) => new Date(a.from).getTime() - new Date(b.from).getTime()
   );
 
-  return NextResponse.json(sorted);
+  return NextResponse.json(slots);
 }

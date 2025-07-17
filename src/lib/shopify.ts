@@ -1,145 +1,177 @@
 // src/lib/shopify.ts
-/* eslint-disable @typescript-eslint/no-explicit-any */
-const SHOP = process.env.SHOPIFY_STORE_DOMAIN!;    // e.g. tienda.myshopify.com
-const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;   // tu Admin API token
-const API_VERSION = '2025-04';
-const SKU = '588000000204';
+import { parse } from 'date-fns';
 
-export type BookingLine = {
-  orderId: number;
+const SHOP = process.env.SHOPIFY_STORE_DOMAIN!;    // p.ej. "mi-tienda.myshopify.com"
+const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;   // tu Admin API token
+const API_VERSION = '2023-10';
+const SKU_TARGET = '588000000204';
+
+export interface BookingLine {
   orderGid: string;
   orderName: string;
   persons: number;
   fromISO: string;
   toISO: string;
-  assistedCount: number;
-  assistedUser: string | null;
-};
+  attended: boolean;
+}
 
-// Paginador Shopify REST
-async function* fetchOrders(): AsyncGenerator<any> {
-  let url = `https://${SHOP}/admin/api/${API_VERSION}/orders.json?status=any&limit=250`;
-  const headers = {
-    'X-Shopify-Access-Token': TOKEN,
-    'Content-Type': 'application/json',
-  };
-  while (url) {
-    const res = await fetch(url, { headers });
-    if (res.status === 429) { await new Promise(r=>setTimeout(r,1000)); continue; }
-    if (!res.ok) throw new Error(`Shopify REST ${res.status}`);
-    const { orders } = (await res.json()) as { orders: any[] };
-    yield* orders;
-    url = res.headers.get('link')?.match(/<([^>]+)>;\s*rel="next"/)?.[1] || '';
+/**
+ * Parsea el header Link de Shopify para extraer cursors de paginación.
+ */
+function parseLinkHeader(header: string): Record<string, string> {
+  const parts = header.split(',');
+  const map: Record<string, string> = {};
+  for (const part of parts) {
+    const match = part.match(/<[^?]+\?page_info=([^>]+)>;\s*rel="([^"]+)"/);
+    if (match) {
+      map[match[2]] = match[1];
+    }
   }
+  return map;
 }
 
-// Extrae fecha/hora
-function parseReservas(txt: string) {
-  const m = txt.match(/Fecha:\s*([^H]+)\s*Hora:\s*([^‑-]+)[‑-]\s*(.+)/i);
-  return m && { date: m[1].trim(), from: m[2].trim(), to: m[3].trim() };
-}
-
-// Lee pedidos y agrega assistedCount/user desde note_attributes
+/**
+ * Trae todas las líneas de reserva en los próximos 30 días, paginando REST
+ * y usando _booking_start_timestamp y _booking_duration de li.properties.
+ */
 export async function getBookings(now: Date, max: Date): Promise<BookingLine[]> {
-  const out: BookingLine[] = [];
-  for await (const o of fetchOrders()) {
-    const notes = (o.note_attributes as any[]) || [];
-    for (const li of o.line_items as any[]) {
-      if (li.sku !== SKU) continue;
-      const prop = (li.properties || []).find((p: any) => p.name.toLowerCase() === 'reservas');
-      if (!prop) continue;
-      const p = parseReservas(String(prop.value));
-      if (!p) continue;
-      const from = new Date(`${p.date} ${p.from}`);
-      const to   = new Date(`${p.date} ${p.to}`);
-      if (isNaN(from.getTime()) || from < now || from > max) continue;
-      const iso = from.toISOString();
-      const clean = iso.replace(/[^a-zA-Z0-9]/g, '_');
+  let pageInfo: string | null = null;
+  const allOrders: any[] = [];
 
-      // Buscar nota Asistido_<slot>
-      let assistedCount = 0, assistedUser: string | null = null;
-      notes.forEach((n) => {
-        if (n.name === `Asistido_${clean}` && typeof n.value === 'string') {
-          assistedCount += 1;
-          assistedUser = n.value;
-        }
-      });
+  // PAGINACIÓN REST sobre /orders.json
+  do {
+    const url = new URL(`https://${SHOP}/admin/api/${API_VERSION}/orders.json`);
+    url.searchParams.set('status', 'any');
+    url.searchParams.set('limit', '250');
+    if (pageInfo) url.searchParams.set('page_info', pageInfo);
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        'X-Shopify-Access-Token': TOKEN,
+        'Content-Type': 'application/json',
+      },
+    });
+    if (!res.ok) throw new Error(`Fetch orders failed: ${res.status}`);
+    const json = await res.json();
+    allOrders.push(...(json.orders as any[]));
+
+    const link = res.headers.get('Link');
+    if (link) {
+      const links = parseLinkHeader(link);
+      pageInfo = links.next || null;
+    } else {
+      pageInfo = null;
+    }
+  } while (pageInfo);
+
+  // PROCESAR cada pedido + línea
+  const out: BookingLine[] = [];
+  for (const order of allOrders) {
+    const orderGid = order.admin_graphql_api_id as string;
+    const orderName = order.name as string;
+    const noteAttrs = Array.isArray(order.note_attributes)
+      ? (order.note_attributes as any[])
+      : [];
+
+    for (const li of order.line_items as any[]) {
+      if (li.sku !== SKU_TARGET) continue;
+
+      const props = Array.isArray(li.properties) ? li.properties as any[] : [];
+      // Timestamp inicio
+      const tsProp = props.find((p) => p.name === '_booking_start_timestamp');
+      const durProp = props.find((p) => p.name === '_booking_duration');
+      if (!tsProp || !durProp) continue;
+
+      const tsValue = Number(tsProp.value);
+      const durValue = Number(durProp.value);
+      if (isNaN(tsValue) || isNaN(durValue)) continue;
+
+      const from = new Date(tsValue);
+      if (from < now || from > max) continue;
+
+      const to = new Date(tsValue + durValue * 60000);
+      const fromISO = from.toISOString();
+      const toISO = to.toISOString();
+
+      // Flag único por línea
+      const flag = `Asistido_${fromISO}_${orderGid}`;
+      const attended = noteAttrs.some((n) => n.name === flag);
 
       out.push({
-        orderId: o.id,
-        orderGid: o.admin_graphql_api_id,
-        orderName: o.name,
-        persons: li.quantity || 0,
-        fromISO: iso,
-        toISO: to.toISOString(),
-        assistedCount,
-        assistedUser,
+        orderGid,
+        orderName,
+        persons: li.quantity as number,
+        fromISO,
+        toISO,
+        attended,
       });
     }
   }
+
   return out;
 }
 
-// Marca asistido: añade N note_attributes con nombre Asistido_<slot>, valor user
-export async function markSlotAttended(
+/**
+ * Interna: añade o elimina el note_attribute de asistido para una línea.
+ */
+async function updateNotes(
   orderGid: string,
   slotISO: string,
-  user: string,
-  count: number
+  add: boolean,
+  user?: string
 ) {
   const id = Number(orderGid.split('/').pop());
   const url = `https://${SHOP}/admin/api/${API_VERSION}/orders/${id}.json`;
-  const headers = {
-    'X-Shopify-Access-Token': TOKEN,
-    'Content-Type': 'application/json',
-  };
-  const getRes = await fetch(url, { headers });
+
+  // GET pedido
+  const getRes = await fetch(url, {
+    headers: {
+      'X-Shopify-Access-Token': TOKEN,
+      'Content-Type': 'application/json',
+    },
+  });
   if (!getRes.ok) throw new Error(`Fetch order failed: ${getRes.status}`);
   const { order } = await getRes.json();
-  // Filtra previas para este slot
-  const clean = slotISO.replace(/[^a-zA-Z0-9]/g, '_');
-  const baseNotes = (order.note_attributes as any[] || []).filter(
-    (n) => n.name !== `Asistido_${clean}`
-  );
-  // Añade count veces
-  for (let i = 0; i < count; i++) {
-    baseNotes.push({ name: `Asistido_${clean}`, value: user });
+
+  // Filtrar previos y añadir o no
+  const notes = Array.isArray(order.note_attributes)
+    ? order.note_attributes.filter(
+        (n: any) => n.name !== `Asistido_${slotISO}_${orderGid}`
+      )
+    : [];
+
+  if (add && user) {
+    notes.push({
+      name: `Asistido_${slotISO}_${orderGid}`,
+      value: `${user}_${new Date().toISOString()}`,
+    });
   }
-  // PUT actualiza sólo note_attributes
-  const body = { order: { id: order.id, note_attributes: baseNotes } };
+
+  // PUT actualiza solo note_attributes
   const putRes = await fetch(url, {
-    method: 'PUT', headers, body: JSON.stringify(body),
+    method: 'PUT',
+    headers: {
+      'X-Shopify-Access-Token': TOKEN,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ order: { id: order.id, note_attributes: notes } }),
   });
   if (!putRes.ok) {
     const txt = await putRes.text();
-    throw new Error(`Update failed: ${putRes.status} ${txt}`);
+    throw new Error(`PUT failed ${putRes.status}: ${txt}`);
   }
 }
 
-// Desmarca asistido: elimina todas las note_attributes de ese slot
-export async function unmarkSlotAttended(
+/** Marca una línea de pedido como asistida */
+export function markLineAttended(
   orderGid: string,
-  slotISO: string
+  slotISO: string,
+  user: string
 ) {
-  const id = Number(orderGid.split('/').pop());
-  const url = `https://${SHOP}/admin/api/${API_VERSION}/orders/${id}.json`;
-  const headers = {
-    'X-Shopify-Access-Token': TOKEN,
-    'Content-Type': 'application/json',
-  };
-  const getRes = await fetch(url, { headers });
-  if (!getRes.ok) throw new Error(`Fetch order failed: ${getRes.status}`);
-  const { order } = await getRes.json();
-  const clean = slotISO.replace(/[^a-zA-Z0-9]/g, '_');
-  const newNotes = (order.note_attributes as any[] || []).filter(
-    (n) => n.name !== `Asistido_${clean}`
-  );
-  const body = { order: { id: order.id, note_attributes: newNotes } };
-  const putRes = await fetch(url, {
-    method: 'PUT', headers, body: JSON.stringify(body),
-  });
-  if (!putRes.ok) {
-    const txt = await putRes.text();
-    throw new Error(`Unmark failed: ${putRes.status} ${txt}`);
-  }
+  return updateNotes(orderGid, slotISO, true, user);
+}
+
+/** Desmarca una línea de pedido */
+export function unmarkLineAttended(orderGid: string, slotISO: string) {
+  return updateNotes(orderGid, slotISO, false);
 }
