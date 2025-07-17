@@ -6,7 +6,7 @@ import useSWR from 'swr';
 import { format, compareAsc } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { useSession } from 'next-auth/react';
-import { CheckCircle, XCircle, MinusCircle } from 'lucide-react';
+import { Clock, CheckCircle, XCircle } from 'lucide-react';
 
 interface OrderInfo {
   gid: string;
@@ -23,7 +23,7 @@ interface Slot {
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-export default function Calendar() {
+export default function Calendar(): JSX.Element {
   const { data, error, isLoading, mutate } = useSWR<Slot[]>('/api/reservas', fetcher, {
     refreshInterval: 60000,
   });
@@ -32,11 +32,11 @@ export default function Calendar() {
   if (error)
     return <p className="mt-6 text-center text-base text-red-600">Error: {String(error)}</p>;
   if (isLoading)
-    return <p className="mt-6 text-center text-base text-gray-500 dark:text-gray-400">Cargando…</p>;
+    return <p className="mt-6 text-center text-base text-gray-500">Cargando…</p>;
   if (!data || data.length === 0)
-    return <p className="mt-6 text-center text-base text-gray-600 dark:text-gray-400">No hay reservas en 30 días.</p>;
+    return <p className="mt-6 text-center text-base text-gray-600">No hay reservas en 30 días.</p>;
 
-  // Ordenar slots
+  // Ordenar slots cronológicamente
   const sortedSlots = [...data].sort((a, b) =>
     compareAsc(new Date(a.from), new Date(b.from))
   );
@@ -63,7 +63,8 @@ export default function Calendar() {
             {slots.map((slot) => (
               <div key={slot.from} className="p-3 border rounded-lg">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="font-semibold">
+                  <span className="inline-flex items-center bg-[#FAEDEB] text-gray-800 px-2 py-1 rounded text-sm font-semibold">
+                    <Clock className="w-4 h-4 text-[#F0816C] mr-1" />
                     {format(new Date(slot.from), 'HH:mm')} – {format(new Date(slot.to), 'HH:mm')}
                   </span>
                 </div>
@@ -74,7 +75,7 @@ export default function Calendar() {
                         {order.name} • {order.persons} pers
                       </span>
                       <button
-                        className={`ml-4 rounded px-3 py-1 text-sm font-medium text-white ${
+                        className={`ml-4 rounded px-3 py-1 text-sm font-medium text-white flex items-center ${
                           order.attended
                             ? 'bg-red-500 hover:bg-red-600'
                             : 'bg-[#F0816C] hover:bg-[#e67061]'
@@ -99,7 +100,15 @@ export default function Calendar() {
                           else mutate();
                         }}
                       >
-                        {order.attended ? 'Desmarcar' : 'Asistido'}
+                        {order.attended ? (
+                          <>
+                            <XCircle className="w-4 h-4 mr-1" /> Desmarcar
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4 mr-1" /> Asistido
+                          </>
+                        )}
                       </button>
                     </li>
                   ))}
