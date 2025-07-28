@@ -1,20 +1,14 @@
 // middleware.ts
-import { withAuth } from 'next-auth/middleware';
-import type { NextRequest } from 'next/server';
+import { withAuth } from "next-auth/middleware";
 
-export default withAuth(
-  function middleware(req: NextRequest) {
-    // puede quedarse vacío, conAuth ya redirige si no hay token
-    return;
-  },
-  {
-    callbacks: {
-      authorized: ({ token }) => !!token,
-    },
-  }
-);
+// Con esto, cualquier ruta protegida sin sesión te redirige al signin
+export default withAuth();
 
-// Sólo protégete estas rutas:
+// Rutas a proteger
 export const config = {
-  matcher: ['/calendar/:path*', '/api/reservas/:path*'],
+  matcher: [
+    "/calendar",          // protege /calendar
+    "/calendar/:path*",   // y sus subrutas
+    "/api/reservas/:path*"// protege todas tus APIs de reservas
+  ],
 };
