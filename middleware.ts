@@ -1,38 +1,20 @@
 // middleware.ts
-import { getToken } from 'next-auth/jwt';
-import { NextResponse } from 'next/server';
+import { withAuth } from 'next-auth/middleware';
 import type { NextRequest } from 'next/server';
 
-// Este secreto debe coincidir con NEXTAUTH_SECRET
-const secret = process.env.NEXTAUTH_SECRET!;
-
-export async function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
-
-  // No proteger rutas estáticas, _next y auth
-  if (
-    pathname.startsWith('/_next') ||
-    pathname.startsWith('/static') ||
-    pathname.startsWith('/api/auth') ||
-    pathname.includes('.')
-  ) {
-    return NextResponse.next();
+export default withAuth(
+  function middleware(req: NextRequest) {
+    // puede quedarse vacío, conAuth ya redirige si no hay token
+    return;
+  },
+  {
+    callbacks: {
+      authorized: ({ token }) => !!token,
+    },
   }
+);
 
-  // Comprobar token
-  const token = await getToken({ req, secret });
-  if (!token) {
-    // Redirigir a signin, manteniendo la ruta de regreso
-    const signInUrl = req.nextUrl.clone();
-    signInUrl.pathname = '/api/auth/signin';
-    signInUrl.searchParams.set('callbackUrl', req.nextUrl.pathname);
-    return NextResponse.redirect(signInUrl);
-  }
-
-  return NextResponse.next();
-}
-
-// Aplicar middleware a la página de calendario y a tus APIs de reservas
+// Sólo protégete estas rutas:
 export const config = {
-  matcher: ['/calendar/:path*', '/api/reservas/:path*', '/'],
+  matcher: ['/calendar/:path*', '/api/reservas/:path*'],
 };
