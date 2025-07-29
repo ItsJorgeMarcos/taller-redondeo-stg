@@ -1,4 +1,5 @@
 // src/lib/auth.ts
+
 import { AuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 
@@ -14,6 +15,7 @@ export const authOptions: AuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.user || !credentials?.pass) return null;
+        // Busca user:pass en AUTH_USERS (texto claro)
         const entry = usersEnv
           .split(',')
           .find((e) => e.startsWith(`${credentials.user}:`));
