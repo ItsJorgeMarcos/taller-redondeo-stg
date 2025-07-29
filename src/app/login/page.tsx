@@ -18,13 +18,12 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4">
-      <h1 className="text-xl font-semibold">Acceso al Taller</h1>
-
+    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#FAEDEB]">
+      <h1 className="text-xl font-semibold text-[#F0816C]">Acceso al Taller</h1>
       <form
         className="flex flex-col items-center gap-3"
         onSubmit={(e) => {
-          e.preventDefault(); // evita recarga
+          e.preventDefault();
           void handleSubmit();
         }}
       >
@@ -41,15 +40,13 @@ export default function LoginPage() {
           value={password}
           onChange={(e) => setPass(e.target.value)}
         />
-
         <button
           type="submit"
-          className="w-72 rounded bg-sky-500 px-4 py-2 text-white"
+          className="w-72 rounded bg-[#F0816C] px-4 py-2 text-white hover:bg-[#e67061] transition"
         >
           Entrar
         </button>
       </form>
-
       {error && <p className="text-red-500">{error}</p>}
     </main>
   );

@@ -1,20 +1,22 @@
-// src/app/calendar/page.tsx
-
 import Calendar from '@/components/Calendar';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';        // <-- Import correcto desde lib/auth
+import { authOptions } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
 
 export default async function CalendarPage() {
-  // Protege vía sesión server‑side
   const session = await getServerSession(authOptions);
   if (!session) {
-    // Si no hay sesión, redirige al login y regresa a /calendar
-    redirect(`/api/auth/signin?callbackUrl=/calendar`);
+    redirect(`/login?callbackUrl=/calendar`);
   }
 
-  // Si está logueado, renderiza el componente cliente
-  return <Calendar />;
+  return (
+    <>
+      <h1 className="text-3xl font-bold text-center text-[#F0816C] underline my-6">
+        Calendario Taller Redondeo
+      </h1>
+      <Calendar />
+    </>
+  );
 }
