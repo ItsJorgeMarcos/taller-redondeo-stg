@@ -1,48 +1,29 @@
-import NextAuth, { type NextAuthOptions } from 'next-auth';
+// src/lib/auth.ts
+import { AuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
-import crypto from 'node:crypto';
 
-type UserRec = { name: string; pass: string };
+const usersEnv = process.env.AUTH_USERS || '';
 
-function loadUsers(): UserRec[] {
-  return (process.env.AUTH_USERS ?? '')
-    .split(',')
-    .filter(Boolean)
-    .map((pair) => {
-      const [name, pass] = pair.split(':');
-      return { name, pass };
-    });
-}
-
-/* Compara de forma constante para evitar timing‑attacks */
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-export const authOptions: NextAuthOptions = {
+export const authOptions: AuthOptions = {
   providers: [
     CredentialsProvider({
-      name: 'Login Taller',
+      name: 'Usuario y Contraseña',
       credentials: {
-        username: { label: 'Usuario', type: 'text' },
-        password: { label: 'Contraseña', type: 'password' },
+        user: { label: 'Usuario', type: 'text' },
+        pass: { label: 'Contraseña', type: 'password' },
       },
-      async authorize(creds) {
-        if (!creds) return null;
-        const user = loadUsers().find((u) => u.name === creds.username);
-        if (!user) return null;
-        const ok = safeEqual(creds.password, user.pass);
-        return ok ? { id: user.name, name: user.name } : null;
+      async authorize(credentials) {
+        if (!credentials?.user || !credentials?.pass) return null;
+        const entry = usersEnv
+          .split(',')
+          .find((e) => e.startsWith(`${credentials.user}:`));
+        if (!entry) return null;
+        const [, storePass] = entry.split(':');
+        if (credentials.pass !== storePass) return null;
+        return { id: credentials.user, name: credentials.user };
       },
     }),
   ],
-  pages: { signIn: '/login' },
   session: { strategy: 'jwt' },
   secret: process.env.NEXTAUTH_SECRET,
 };
-
-const handler = NextAuth(authOptions);
-export { handler as GET, handler as POST };
